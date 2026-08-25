@@ -12,8 +12,8 @@ const test_mocks = vi.hoisted(() => {
   for (const key of [`cleanupMatterViz`, `initializeMatterViz`, `matterviz_data`]) {
     vi.stubGlobal(key, undefined)
   }
-  // jsdom has neither Worker nor object URLs; record what main.ts's shim hands the native
-  // constructor and what it turns into a blob
+  // jsdom has neither Worker nor object URLs; record what gets handed to the native
+  // constructor and what turns into a blob
   const native_worker_calls: { url: string; options?: WorkerOptions }[] = []
   const object_url_blobs: Blob[] = []
   vi.stubGlobal(
@@ -55,9 +55,6 @@ vi.mock(`svelte`, async (import_original) => ({
   unmount: test_mocks.unmount,
 }))
 const { mount, parse_file_content, parse_in_worker, post_message, unmount } = test_mocks
-// Captured now: afterEach's unstubAllGlobals would later drop the shimmed constructor and
-// restore the pre-import (undefined) stubs of the bootstrap functions main.ts installed
-const ShimmedWorker = globalThis.Worker
 const { initializeMatterViz: initialize_matterviz, cleanupMatterViz: cleanup_matterviz } =
   window
 
@@ -540,28 +537,4 @@ test(`a bootstrap that fails before displaying still accepts host reloads`, asyn
   update_file(`late`)
   await vi.waitFor(() => expect(mount).toHaveBeenCalledTimes(1))
   expect(last_mounted_props()?.value).toBe(`late`)
-})
-
-test(`routes cross-origin worker scripts through a same-origin blob module`, async () => {
-  const { native_worker_calls, object_url_blobs } = test_mocks
-  const resource_url = `https://file+.vscode-resource.vscode-cdn.net/ext/dist/assets/parse-worker.js`
-  const workers = [
-    new ShimmedWorker(resource_url, { type: `module` }),
-    new ShimmedWorker(new URL(resource_url), { type: `classic`, name: `msd` }),
-    new ShimmedWorker(`${location.origin}/assets/same-origin.js`, { type: `module` }),
-    new ShimmedWorker(`blob:${location.origin}/already-a-blob`),
-  ]
-  expect(workers).toHaveLength(4)
-  expect(native_worker_calls).toEqual([
-    { url: `blob:${location.origin}/mock-1`, options: { type: `module` } },
-    // blob wrappers are module workers regardless of what the caller asked for
-    { url: `blob:${location.origin}/mock-2`, options: { type: `module`, name: `msd` } },
-    { url: `${location.origin}/assets/same-origin.js`, options: { type: `module` } },
-    { url: `blob:${location.origin}/already-a-blob`, options: undefined },
-  ])
-  // A static import would be blocked by the webview CSP; only the dynamic form loads
-  expect(await Promise.all(object_url_blobs.map((blob) => blob.text()))).toEqual(
-    Array(2).fill(`await import(${JSON.stringify(resource_url)})`),
-  )
-  expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2)
 })

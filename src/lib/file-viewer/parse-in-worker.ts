@@ -1,7 +1,9 @@
+// oxlint-disable import/default -- Vite ?worker&url modules only default-export the asset URL
 // Parse files in a fresh module worker. A trajectory remains owned by that worker and the
 // main thread receives a TrajectoryRun backed by its MessagePort.
 // oxlint-disable eslint-plugin-unicorn/require-post-message-target-origin
 // oxlint-disable eslint-plugin-unicorn/relative-url-style
+import parse_worker_url from './parse-worker.js?worker&url'
 import type {
   OpenTrajectoryOptions,
   ParseProgress,
@@ -10,6 +12,8 @@ import type {
   TrajectorySource,
 } from '$lib/trajectory'
 import { Hdf5GroupSelectionRequiredError, open_trajectory } from '$lib/trajectory'
+import { load_worker } from '$lib/load-worker'
+
 import { dispose_run_port, worker_run } from '$lib/trajectory/runs/worker'
 import { to_error } from '$lib/utils'
 import { parse_file_content, type ParseResult, type TrajectoryLoadOptions } from './parse'
@@ -18,7 +22,7 @@ import type { ParseWorkerRequest, ParseWorkerResponse } from './parse-worker-pro
 export type * from './parse-worker-protocol'
 
 export type WorkerLike = Pick<Worker, `postMessage` | `addEventListener` | `terminate`>
-type WorkerFactory = () => WorkerLike
+type WorkerFactory = () => WorkerLike | Promise<WorkerLike>
 
 interface ParseInWorkerOptions {
   worker_factory?: WorkerFactory
@@ -43,8 +47,7 @@ const BYTES_PER_MIB = 1024 ** 2
 export const MAIN_THREAD_FALLBACK_TEXT_MAX_BYTES = 25 * BYTES_PER_MIB
 export const MAIN_THREAD_FALLBACK_BINARY_MAX_BYTES = 50 * BYTES_PER_MIB
 
-const default_worker_factory: WorkerFactory = () =>
-  new Worker(new URL(`./parse-worker.js`, import.meta.url), { type: `module` })
+const default_worker_factory: WorkerFactory = () => load_worker(parse_worker_url)
 
 let next_request_id = 0
 
@@ -81,51 +84,66 @@ const run_in_worker = (
 ): Promise<WorkerParseOutcome> =>
   new Promise<WorkerParseOutcome>((resolve, reject) => {
     if (signal?.aborted) return reject(to_error(signal.reason ?? parse_abort_error()))
-    let worker: WorkerLike
-    try {
-      worker = worker_factory()
-    } catch (error) {
-      reject(new WorkerUnavailableError(to_error(error).message, { cause: error }))
-      return
-    }
+    // The factory may await (webview workers load via fetch -> blob), so construction is
+    // chained off a microtask and every later failure still funnels through `settle`.
+    let worker: WorkerLike | undefined
     let settled = false
     const settle = (outcome: WorkerParseOutcome | Error, keep_worker = false): void => {
       if (settled) return
       settled = true
       signal?.removeEventListener(`abort`, abort)
-      if (!keep_worker) worker.terminate()
+      if (!keep_worker) worker?.terminate()
       if (outcome instanceof Error) reject(outcome)
       else resolve(outcome)
     }
     const abort = (): void => settle(to_error(signal?.reason ?? parse_abort_error()))
-    worker.addEventListener(`message`, ((event: MessageEvent<ParseWorkerResponse>) => {
-      const { id, result, error, progress, run_port, hdf5_group_paths } = event.data ?? {}
-      if (settled || id !== request.id) {
-        dispose_run_port(run_port)
-        return
-      }
-      if (progress) return on_progress?.(progress)
-      if (!result) {
-        return settle(
-          hdf5_group_paths
-            ? new Hdf5GroupSelectionRequiredError(hdf5_group_paths, error)
-            : new Error(error ?? `Parse worker returned no result for ${request.filename}`),
+    void Promise.resolve()
+      .then(worker_factory)
+      .then((constructed) => {
+        if (settled) {
+          constructed.terminate()
+          return
+        }
+        worker = constructed
+        const wired: WorkerLike = worker
+        wired.addEventListener(`message`, ((event: MessageEvent<ParseWorkerResponse>) => {
+          const { id, result, error, progress, run_port, hdf5_group_paths } = event.data ?? {}
+          if (settled || id !== request.id) {
+            dispose_run_port(run_port)
+            return
+          }
+          if (progress) return on_progress?.(progress)
+          if (!result) {
+            return settle(
+              hdf5_group_paths
+                ? new Hdf5GroupSelectionRequiredError(hdf5_group_paths, error)
+                : new Error(
+                    error ?? `Parse worker returned no result for ${request.filename}`,
+                  ),
+            )
+          }
+          settle({ result, run_port, worker: wired }, Boolean(run_port))
+        }) as EventListener)
+        wired.addEventListener(`error`, (event) =>
+          settle(worker_event_error(event, `Parse worker failed to load`)),
         )
-      }
-      settle({ result, run_port, worker }, Boolean(run_port))
-    }) as EventListener)
-    worker.addEventListener(`error`, (event) =>
-      settle(worker_event_error(event, `Parse worker failed to load`)),
-    )
-    worker.addEventListener(`messageerror`, () =>
-      settle(new WorkerUnavailableError(`Parse worker response failed to deserialize`)),
-    )
-    signal?.addEventListener(`abort`, abort, { once: true })
-    try {
-      worker.postMessage(request, { transfer })
-    } catch (error) {
-      settle(new WorkerUnavailableError(to_error(error).message, { cause: error }))
-    }
+        wired.addEventListener(`messageerror`, () =>
+          settle(new WorkerUnavailableError(`Parse worker response failed to deserialize`)),
+        )
+        signal?.addEventListener(`abort`, abort, { once: true })
+        if (signal?.aborted) {
+          // The abort landed while construction was still in flight.
+          return settle(to_error(signal.reason ?? parse_abort_error()))
+        }
+        try {
+          worker.postMessage(request, { transfer })
+        } catch (error) {
+          settle(new WorkerUnavailableError(to_error(error).message, { cause: error }))
+        }
+      })
+      .catch((error: unknown) =>
+        reject(new WorkerUnavailableError(to_error(error).message, { cause: error })),
+      )
   })
 
 const bind_worker_run = ({ result, run_port, worker }: WorkerParseOutcome): ParseResult => {

@@ -1,7 +1,11 @@
+// oxlint-disable import/default -- Vite ?worker&url modules only default-export the asset URL
 // oxlint-disable eslint-plugin-unicorn/relative-url-style -- Vite worker detection needs the `./` prefix
 // Web Worker wrapper for compute_ternary_phase_diagram with a main-thread fallback (SSR, no
 // Worker, or a custom gas provider, which is a function and cannot cross the thread boundary).
+import ternary_worker_url from './ternary-worker.js?worker&url'
 import { slim_phase_entry } from '$lib/convex-hull/helpers'
+import { load_worker } from '$lib/load-worker'
+
 import type { PhaseData } from '$lib/convex-hull/types'
 import type { WorkerRequestOptions } from '$lib/worker-client.svelte'
 import { abort_error, create_worker_client } from '$lib/worker-client.svelte'
@@ -38,8 +42,7 @@ const run_diagram = create_worker_client<
   DiagramProgress
 >({
   label: `Ternary phase diagram`,
-  create_worker: () =>
-    new Worker(new URL(`./ternary-worker.js`, import.meta.url), { type: `module` }),
+  create_worker: () => load_worker(ternary_worker_url),
   compute_sync: (entries, options) =>
     compute_ternary_phase_diagram(entries.map(slim_entry), options),
   build_payload: (entries) => entries.map(slim_entry),

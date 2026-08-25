@@ -9,9 +9,11 @@ import { to_error } from '$lib/utils'
 interface WorkerClientConfig<Input, Options, Result> {
   // Names the module in error messages, e.g. `MSD`
   label: string
-  // Must inline `new URL('./x-worker.js', import.meta.url)` at the call site: Vite detects
-  // workers syntactically and cannot follow the URL through a variable.
-  create_worker: () => Worker
+  // Must reference the worker module through `new URL('./x-worker.js?worker&url', ...)` or
+  // a `?worker&url` import at the call site: Vite detects workers syntactically and cannot
+  // follow the URL through a variable. May return a Promise: webview hosts (VS Code) load
+  // worker scripts via fetch -> blob, which is inherently asynchronous.
+  create_worker: () => Worker | Promise<Worker>
   // SSR / no-Worker fallback, run on the main thread. Receives `undefined` when the caller
   // omitted options, exactly as the worker's compute does, so a defaulted `options = {}`
   // parameter serves both paths.
@@ -92,6 +94,10 @@ export function create_worker_client<
   const terminate_worker = (): void => {
     worker?.terminate()
     worker = null
+    // A spawn still in flight would otherwise assign its worker after this termination;
+    // the bumped epoch makes its resolution discard itself instead.
+    worker_epoch++
+    worker_bootstrapping = undefined
   }
   // Also the teardown path for worker `error`/`messageerror` events and id-less error replies
   const cancel = (reason = `${label} worker request cancelled`): void => {
@@ -226,7 +232,7 @@ export function create_worker_client<
     // result, so the abandoned compute is left to finish on its own
     if (pending.size > 0) return
     terminate_worker()
-    ensure_worker()
+    void ensure_worker()
   }
 
   // Hand one caller a view of a (possibly shared) request that honours its own signal and
@@ -259,22 +265,47 @@ export function create_worker_client<
   // inlined the bundle so `new URL(..., import.meta.url)` has no usable base): the module
   // then computes on the main thread like an environment without Worker at all.
   let worker_unusable = false
+  // Guards async spawns against a terminate that lands mid-construction.
+  let worker_epoch = 0
+  let worker_bootstrapping: Promise<Worker | null> | undefined
   // Construct the worker (if none is alive) and wire its listeners. Shared by the request
-  // path and by `drop`, which pre-warms the replacement for the next request.
-  function ensure_worker(): Worker | null {
-    if (typeof Worker === `undefined` || worker_unusable) return null
-    if (worker) return worker
-    try {
-      worker = create_worker()
-    } catch (error) {
-      worker_unusable = true
-      console.warn(
-        `${label} worker could not be constructed; computing on the main thread:`,
-        error,
-      )
-      return null
-    }
-    worker.addEventListener(`message`, ({ data: { id, result, error, progress } }) => {
+  // path and by `drop`, which pre-warms the replacement for the next request. Memoizes the
+  // construction promise so concurrent requests share one worker instead of racing spawns.
+  function ensure_worker(): Promise<Worker | null> {
+    if (worker) return Promise.resolve(worker)
+    if (typeof Worker === `undefined` || worker_unusable) return Promise.resolve(null)
+    const epoch = worker_epoch
+    // Chain construction off a microtask so a synchronous factory throw (e.g. Trusted Types
+    // on a raw URL) lands in the shared rejection path instead of this call frame.
+    worker_bootstrapping ??= Promise.resolve()
+      .then(() => create_worker())
+      .then((constructed) => {
+        // Terminated while spawning (cancel/release/drop): discard the orphaned worker.
+        if (epoch !== worker_epoch) {
+          constructed.terminate()
+          return null
+        }
+        worker = wire_worker(constructed)
+        return worker
+      })
+      .catch((error: unknown) => {
+        // Construction failed for good (no Worker support, blocked script URL): every
+        // future request computes on the main thread, like an environment without Worker.
+        if (epoch === worker_epoch) {
+          worker_unusable = true
+          console.warn(
+            `${label} worker could not be constructed; computing on the main thread:`,
+            error,
+          )
+        }
+        return null
+      })
+    return worker_bootstrapping
+  }
+  // Wire parse/analysis listeners onto a freshly constructed worker. Returns it so the
+  // bootstrapping memo can store it atomically with the wiring.
+  function wire_worker(wkr: Worker): Worker {
+    wkr.addEventListener(`message`, ({ data: { id, result, error, progress } }) => {
       // serve_worker's own `messageerror` reply: the request that failed to deserialize
       // on the worker side has no id, so nothing can be settled individually
       if (id === null) {
@@ -297,24 +328,24 @@ export function create_worker_client<
     // Both handlers must tear the worker down: an unsettled `pending` entry leaves every
     // caller awaiting forever, and its key stays in `pending_by_key` so each identical
     // retry is handed the same promise that will never settle.
-    worker.addEventListener(`error`, (event) => {
+    wkr.addEventListener(`error`, (event) => {
       event.preventDefault()
       cancel(event.message || `${label} worker initialization error`)
     })
     // A response that fails to deserialize never reaches the `message` handler
-    worker.addEventListener(`messageerror`, () => {
+    wkr.addEventListener(`messageerror`, () => {
       cancel(`${label} worker sent a message that could not be deserialized`)
     })
-    return worker
+    return wkr
   }
 
-  const compute_unsafe = (
+  const compute_unsafe = async (
     input: Input,
     options: Options | undefined,
     request_options: WorkerRequestOptions<Progress>,
   ): Promise<Result> => {
     const { signal } = request_options
-    if (signal?.aborted) return Promise.reject(abort_error(signal, label))
+    if (signal?.aborted) throw abort_error(signal, label)
     // Content-keyed clients build once before the lookup and reuse that same snapshot for
     // postMessage. Identity-keyed clients defer payload construction until a cache miss.
     const keyed_payload = dedupe_by_payload ? build_payload(input) : undefined
@@ -322,7 +353,7 @@ export function create_worker_client<
     const existing = pending_by_key.get(request_key)
     if (existing) return join(existing, request_options)
 
-    const wkr = ensure_worker()
+    const wkr = await ensure_worker()
     if (!wkr) {
       const request = track(request_key, null)
       Promise.resolve()

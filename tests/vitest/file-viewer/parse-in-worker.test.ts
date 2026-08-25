@@ -133,7 +133,7 @@ describe(`parse_in_worker`, () => {
       `script load`,
       () => {
         const worker = make_fake_worker(() => null)
-        queueMicrotask(() => worker.emit(`error`, new ErrorEvent(`error`, { message: `404` })))
+        setTimeout(() => worker.emit(`error`, new ErrorEvent(`error`, { message: `404` })), 0)
         return worker
       },
     ],
@@ -141,7 +141,7 @@ describe(`parse_in_worker`, () => {
       `deserialization`,
       () => {
         const worker = make_fake_worker(() => null)
-        queueMicrotask(() => worker.emit(`messageerror`, new MessageEvent(`messageerror`)))
+        setTimeout(() => worker.emit(`messageerror`, new MessageEvent(`messageerror`)), 0)
         return worker
       },
     ],

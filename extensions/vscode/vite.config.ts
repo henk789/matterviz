@@ -27,9 +27,11 @@ export default defineConfig(({ mode }) => ({
       : svelte(),
     mode === `test` ? mock_vscode() : null,
   ] as PluginOption[],
-  // ES-format workers keep code splitting: with the default iife format the parse worker
-  // inlined the lazily-imported h5wasm chunk and weighed 5 MB per fresh worker
-  worker: { format: `es`, plugins: json_gz_worker_plugins() as () => PluginOption[] },
+  // Single-file iife workers: a blob: worker cannot retain relative chunk imports (ES code
+  // splitting pulls the lazily-imported h5wasm chunks by URL that hang in webviews), so each
+  // worker is bundled standalone. Costs ~5 MB inlined h5wasm in the parse worker; acceptable
+  // tradeoff vs a broken/hanging worker.
+  worker: { format: `iife`, plugins: json_gz_worker_plugins() as () => PluginOption[] },
   build: {
     outDir: `dist`,
     rollupOptions: {

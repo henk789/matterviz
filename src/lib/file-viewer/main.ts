@@ -62,33 +62,6 @@ declare global {
 // second one.
 const vscode_api: VSCodeAPI | null = get_vscode_api()
 
-// VS Code serves the bundle from a resource origin (https://*.vscode-cdn.net) that differs
-// from the webview document's origin, and `new Worker(cross_origin_url)` throws a
-// SecurityError, so every worker (parsing, MSD, VACF, structure-id, isosurface geometry)
-// would fail to construct. A same-origin blob module that imports the real script is what the
-// webview CSP's `worker-src blob:` permits; the imported module keeps its own import.meta.url,
-// so its nested asset URLs still resolve. The import must be dynamic: a static `import` inside
-// the blob is blocked by the webview CSP (verified in Chromium). Same-origin URLs (Hive, the
-// docs site) construct as-is.
-const install_cross_origin_worker_shim = (): void => {
-  if (typeof Worker === `undefined`) return
-  const NativeWorker = Worker
-  globalThis.Worker = class extends NativeWorker {
-    constructor(script_url: string | URL, options?: WorkerOptions) {
-      const href = String(script_url)
-      const cross_origin =
-        /^https?:/i.test(href) && new URL(href).origin !== globalThis.location.origin
-      const blob_url = cross_origin
-        ? URL.createObjectURL(
-            new Blob([`await import(${JSON.stringify(href)})`], { type: `text/javascript` }),
-          )
-        : null
-      super(blob_url ?? script_url, blob_url ? { ...options, type: `module` } : options)
-      if (blob_url) URL.revokeObjectURL(blob_url)
-    }
-  }
-}
-if (vscode_api) install_cross_origin_worker_shim()
 // Display state, with the invariant current_result ⇒ current_app ⇒ current_file:
 // - current_file: the file the host last asked to show (bootstrap payload or a fileUpdated
 //   body); null after fileDeleted/cleanup

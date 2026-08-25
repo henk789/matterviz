@@ -1,7 +1,11 @@
+// oxlint-disable import/default -- Vite ?worker&url modules only default-export the asset URL
 // oxlint-disable eslint-plugin-unicorn/relative-url-style -- Vite worker detection needs the `./` prefix
 // Async wrapper for compute_isosurface_geometries via the shared persistent-worker client.
 // Falls back to synchronous main-thread extraction during SSR / where Worker is missing.
+import geometry_worker_url from './geometry-worker.js?worker&url'
 import { create_worker_client, type WorkerRequestOptions } from '$lib/worker-client.svelte'
+import { load_worker } from '$lib/load-worker'
+
 import type { GeometryInput, GeometryResult } from './geometry'
 import { compute_isosurface_geometries } from './geometry'
 
@@ -11,8 +15,7 @@ const run_geometry = create_worker_client<
   GeometryResult
 >({
   label: `Isosurface geometry`,
-  create_worker: () =>
-    new Worker(new URL(`./geometry-worker.js`, import.meta.url), { type: `module` }),
+  create_worker: () => load_worker(geometry_worker_url),
   compute_sync: compute_isosurface_geometries,
   // Volumes arrive as Svelte $state proxies from the viewer; rebuild the cloneable
   // subset field by field (typed arrays read back raw through the proxy, so the
