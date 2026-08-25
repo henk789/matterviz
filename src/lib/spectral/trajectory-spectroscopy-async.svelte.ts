@@ -1,7 +1,9 @@
+// oxlint-disable import/default -- Vite ?worker&inline modules only default-export the Worker constructor
 // oxlint-disable eslint-plugin-unicorn/relative-url-style -- Vite worker detection needs the `./` prefix
 // calc_trajectory_spectroscopy via a persistent Web Worker; see create_worker_client for
 // `.cancel` / `.release` semantics. The client is shared by every mounted pane, so a pane's
 // unmount path is `.release()` (terminates only when nothing is in flight), never `.cancel()`.
+import TrajectorySpectroscopyWorker from './trajectory-spectroscopy-worker.js?worker&inline'
 import type { TrajectorySignal } from '$lib/trajectory'
 import { plain_position_stream } from '$lib/trajectory/async-result.svelte'
 import { create_worker_client } from '$lib/worker-client.svelte'
@@ -27,10 +29,7 @@ export const compute_trajectory_spectroscopy_async = create_worker_client<
   TrajectorySpectroscopyResult
 >({
   label: `trajectory spectroscopy`,
-  create_worker: () =>
-    new Worker(new URL(`./trajectory-spectroscopy-worker.js`, import.meta.url), {
-      type: `module`,
-    }),
+  create_worker: () => new TrajectorySpectroscopyWorker(),
   compute_sync: calc_trajectory_spectroscopy,
   build_payload: (input): TrajectorySpectroscopyInput => {
     const { infrared_signal, raman_signal } = input

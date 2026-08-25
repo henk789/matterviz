@@ -1,7 +1,9 @@
+// oxlint-disable import/default -- Vite ?worker&inline modules only default-export the Worker constructor
 // Parse files in a fresh module worker. A trajectory remains owned by that worker and the
 // main thread receives a TrajectoryRun backed by its MessagePort.
 // oxlint-disable eslint-plugin-unicorn/require-post-message-target-origin
 // oxlint-disable eslint-plugin-unicorn/relative-url-style
+import ParseWorker from './parse-worker.js?worker&inline'
 import type {
   OpenTrajectoryOptions,
   ParseProgress,
@@ -43,8 +45,7 @@ const BYTES_PER_MIB = 1024 ** 2
 export const MAIN_THREAD_FALLBACK_TEXT_MAX_BYTES = 25 * BYTES_PER_MIB
 export const MAIN_THREAD_FALLBACK_BINARY_MAX_BYTES = 50 * BYTES_PER_MIB
 
-const default_worker_factory: WorkerFactory = () =>
-  new Worker(new URL(`./parse-worker.js`, import.meta.url), { type: `module` })
+const default_worker_factory: WorkerFactory = () => new ParseWorker()
 
 let next_request_id = 0
 

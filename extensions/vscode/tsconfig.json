@@ -5,5 +5,11 @@
     "types": ["node"],
     "allowJs": true
   },
-  "include": ["src/**/*", "tests/**/*", "scripts/**/*"]
+  "include": [
+    "src/**/*",
+    "tests/**/*",
+    "scripts/**/*",
+    // Ambient module declaration for Vite's ?worker&inline imports used by $lib
+    "../../src/worker-inline.d.ts"
+  ]
 }

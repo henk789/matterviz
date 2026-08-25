@@ -72,6 +72,27 @@ const vscode_api: VSCodeAPI | null = get_vscode_api()
 // docs site) construct as-is.
 const install_cross_origin_worker_shim = (): void => {
   if (typeof Worker === `undefined`) return
+  // Inline workers (see the `?worker&inline` imports) construct from blob: URLs. VS Code
+  // webviews enforce Trusted Types on Worker constructors, so raw strings are rejected;
+  // a default policy that vouches only for blob: URLs lets those workers spawn while
+  // leaving every other script URL subject to normal enforcement.
+  type trusted_types_api = {
+    createPolicy: (
+      name: string,
+      rules: { createScriptURL: (url: string) => string },
+    ) => unknown
+  }
+  const trusted_types = (globalThis as { trustedTypes?: trusted_types_api }).trustedTypes
+  try {
+    trusted_types?.createPolicy(`default`, {
+      createScriptURL: (url: string) => {
+        if (url.startsWith(`blob:`)) return url
+        throw new Error(`Blocked non-blob Worker script URL: ${url}`)
+      },
+    })
+  } catch {
+    // A default policy already exists (e.g. registered by the host); nothing to do.
+  }
   const NativeWorker = Worker
   globalThis.Worker = class extends NativeWorker {
     constructor(script_url: string | URL, options?: WorkerOptions) {

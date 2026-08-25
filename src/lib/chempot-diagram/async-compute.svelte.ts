@@ -1,6 +1,8 @@
+// oxlint-disable import/default -- Vite ?worker&inline modules only default-export the Worker constructor
 // oxlint-disable eslint-plugin-unicorn/relative-url-style -- Vite worker detection needs the `./` prefix
 // Async wrapper for compute_chempot_diagram via Web Worker.
 // Falls back to synchronous main-thread computation during SSR.
+import ChempotWorker from './chempot-worker.js?worker&inline'
 import { slim_phase_entry } from '$lib/convex-hull/helpers'
 import type { PhaseData } from '$lib/convex-hull/types'
 import { create_worker_client } from '$lib/worker-client.svelte'
@@ -27,8 +29,7 @@ const run_chempot = create_worker_client<
   ChemPotDiagramData
 >({
   label: `Chempot`,
-  create_worker: () =>
-    new Worker(new URL(`./chempot-worker.js`, import.meta.url), { type: `module` }),
+  create_worker: () => new ChempotWorker(),
   compute_sync: compute_chempot_diagram,
   build_payload: (entries) => entries.map((entry) => slim_phase_entry(entry, PAYLOAD_KEYS)),
   dedupe_by_payload: `unordered`,
