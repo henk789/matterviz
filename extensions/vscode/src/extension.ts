@@ -303,6 +303,14 @@ export const create_html = (
   <head>
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' 'unsafe-eval' 'wasm-unsafe-eval' ${webview.cspSource}; style-src 'unsafe-inline' ${webview.cspSource}; img-src ${webview.cspSource} data:; connect-src ${webview.cspSource}; worker-src blob:;">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Paint the document in the editor's own background before any CSS/JS arrives;
+         otherwise every open flashes bright white -->
+    <style>
+      html,
+      body {
+        background: var(--vscode-editor-background, #1e1e1e);
+      }
+    </style>
     ${css_href ? `<link rel="stylesheet" href="${css_href}">` : ``}
     <script nonce="${nonce}">
       window.matterviz_data=${JSON.stringify(webview_data).replaceAll(`</`, `<\\/`)};
